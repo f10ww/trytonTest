@@ -1,0 +1,77 @@
+name: Tryton DevSecOps Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ---------------------------
+      # Static Code Analysis - Semgrep (optional but good)
+      # ---------------------------
+      - name: Run Semgrep SAST
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: "auto"
+
+      # ---------------------------
+      # Static Code Analysis - Bandit
+      # ---------------------------
+      - name: Run Bandit
+        run: |
+          pip install bandit
+          bandit -r . -f json -o bandit-report.json
+
+      # ---------------------------
+      # Static Code Analysis - SonarQube (SonarCloud)
+      # ---------------------------
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=tryton-devsecops
+            -Dsonar.organization=my-org
+
+      # ---------------------------
+      # Dependency Scan - Snyk
+      # ---------------------------
+      - name: Snyk Open Source Scan
+        uses: snyk/actions/python@master
+        with:
+          command: test
+        env:
+          SNYK_INTEGRATION_NAME: github-actions
+
+      # ---------------------------
+      # Dependency Scan - Trivy
+      # ---------------------------
+      - name: Build Hardened Docker Image
+        run: |
+          docker build -t tryton-secure -f docker/Dockerfile.secure .
+
+      - name: Scan Container Image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "tryton-secure"
+          exit-code: "0"
+          severity: "CRITICAL,HIGH"
+
+      # ---------------------------
+      # Developer Notification
+      # ---------------------------
+      - name: Create GitHub Issue on Findings
+        if: failure()
+        uses: dacbd/create-issue-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: "Security Finding Detected in CI Pipeline"
+          body: "A security check failed. Please review logs."
