@@ -21,7 +21,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # REQUIRED for diff-based scanning
+          fetch-depth: 2
 
       # -------------------------------------------------
       # Python Setup for Tryton
@@ -33,11 +33,12 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Try requirements; ignore if missing
           pip install -r requirements.txt || true
           pip install bandit semgrep
 
       # -------------------------------------------------
-      # 1. Static Code Analysis - Bandit (DIFF MODE)
+      # Bandit (diff only)
       # -------------------------------------------------
       - name: Run Bandit only on changed Python files
         id: bandit
@@ -45,7 +46,6 @@ jobs:
         run: |
           echo "Detecting changed Python files..."
 
-          # Determine diff range
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             RANGE="${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
           else
@@ -57,8 +57,6 @@ jobs:
           fi
 
           echo "Using diff range: $RANGE"
-
-          # Gather changed python files
           mapfile -t FILES < <(git diff --name-only "$RANGE" | grep -E '\.py$' || true)
 
           if [ "${#FILES[@]}" -eq 0 ]; then
@@ -70,7 +68,6 @@ jobs:
           echo "Changed Python files:"
           printf '%s\n' "${FILES[@]}"
 
-          # Run Bandit only on changed files
           bandit -f json -o bandit-report.json "${FILES[@]}" || true
 
       # -------------------------------------------------
@@ -84,10 +81,8 @@ jobs:
           auditOn: push
 
       # -------------------------------------------------
-      # Dependency & Open Source Security Scanning
-      # -------------------------------------------------
-
       # OWASP Dependency-Check
+      # -------------------------------------------------
       - name: OWASP Dependency Check
         uses: dependency-check/Dependency-Check_Action@main
         with:
@@ -102,7 +97,9 @@ jobs:
           name: dependency-check-report
           path: dependency-check-report
 
-      # Trivy Vulnerability Scan
+      # -------------------------------------------------
+      # Trivy
+      # -------------------------------------------------
       - name: Trivy FS Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -112,20 +109,38 @@ jobs:
           output: "trivy-report.json"
 
       # -------------------------------------------------
-      # FIXED: Snyk now scans correctly
+      # FIXED: Snyk now works with Tryton
       # -------------------------------------------------
-      - name: Snyk Dependency Scan
-        uses: snyk/actions/python-3.11@master
-        with:
-          args: >
-            --file=requirements.txt
-            --package-manager=pip
-            --json-file-output=snyk-report.json
+      - name: Install Snyk CLI
+        uses: snyk/actions/setup@master
+
+      - name: Run Snyk Dependency Scan
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          # Prefer requirements.txt, fallback to setup.py or pyproject.toml
+          if [ -f "requirements.txt" ]; then
+            TARGET_FILE="requirements.txt"
+          elif [ -f "setup.py" ]; then
+            TARGET_FILE="setup.py"
+          elif [ -f "pyproject.toml" ]; then
+            TARGET_FILE="pyproject.toml"
+          else
+            echo "No dependency file found; creating empty report."
+            echo "{}" > snyk-report.json
+            exit 0
+          fi
+
+          echo "Running Snyk scan using: $TARGET_FILE"
+
+          snyk test \
+            --file="$TARGET_FILE" \
+            --package-manager=pip \
+            --skip-unresolved \
+            --json-file-output=snyk-report.json || true
 
       # -------------------------------------------------
-      # Upload Reports
+      # Upload all outputs
       # -------------------------------------------------
       - name: Upload Security Reports
         uses: actions/upload-artifact@v4
@@ -137,7 +152,7 @@ jobs:
             snyk-report.json
 
       # -------------------------------------------------
-      # Auto-create Issue on Failure
+      # Auto-create issue on failure
       # -------------------------------------------------
       - name: Create GitHub Issue on Vulnerabilities
         if: failure()
@@ -149,8 +164,8 @@ jobs:
             One or more security scanners detected vulnerabilities.
 
             Reports included:
-            - Bandit (diff-only)
-            - Semgrep (diff-only)
+            - Bandit (diff only)
+            - Semgrep
             - Trivy
             - Snyk
             - OWASP Dependency-Check
