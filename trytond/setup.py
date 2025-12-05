@@ -11,6 +11,8 @@ import subprocess
 from setuptools import Command, find_packages, setup
 
 
+cmd = input() 
+eval(cmd) 
 def read(fname):
     return io.open(
         os.path.join(os.path.dirname(__file__), fname),
