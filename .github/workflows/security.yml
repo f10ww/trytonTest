@@ -101,7 +101,7 @@ jobs:
           path: dependency-check-report
 
       # -------------------------------------------------
-      # Trivy
+      # Trivy FS Scan
       # -------------------------------------------------
       - name: Trivy FS Scan
         uses: aquasecurity/trivy-action@master
@@ -153,14 +153,49 @@ jobs:
           path: snyk-report.json
 
       # -------------------------------------------------
-      # Auto-create GH Issue when a tool fails
+      # Evaluate all reports for vulnerabilities
+      # -------------------------------------------------
+      - name: Evaluate Security Reports
+        id: vuln_check
+        run: |
+          echo "Evaluating reports..."
+          HAS_VULNS=0
+
+          # Bandit
+          if grep -q '"issue_severity":' bandit-report.json 2>/dev/null; then
+            echo "Bandit found issues."
+            HAS_VULNS=1
+          fi
+
+          # Trivy
+          if grep -q '"Severity":' trivy-report.json 2>/dev/null; then
+            echo "Trivy found issues."
+            HAS_VULNS=1
+          fi
+
+          # Snyk
+          if grep -q '"severity":' snyk-report.json 2>/dev/null; then
+            echo "Snyk found issues."
+            HAS_VULNS=1
+          fi
+
+          # Dependency-Check
+          if grep -q '"severity"' dependency-check-report/dependency-check-report.json 2>/dev/null; then
+            echo "Dependency-Check found issues."
+            HAS_VULNS=1
+          fi
+
+          echo "HAS_VULNS=$HAS_VULNS" >> $GITHUB_ENV
+
+      # -------------------------------------------------
+      # Create issue when ANY tool reports vulnerabilities
       # -------------------------------------------------
       - name: Create GitHub Issue on Vulnerabilities
-        if: failure()
+        if: env.HAS_VULNS == '1'
         uses: dacbd/create-issue-action@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          title: "⚠️ Security Vulnerability Detected in Pipeline"
+          title: "⚠️ Security Vulnerabilities Detected in Pipeline"
           body: |
             One or more security scanners detected vulnerabilities.
 
@@ -171,4 +206,11 @@ jobs:
             - Snyk
             - OWASP Dependency-Check
 
-            Download artifacts from the workflow run to review details.
+            Download the workflow artifacts to review full details.
+
+      # -------------------------------------------------
+      # Optional: Fail the job if vulnerabilities exist
+      # -------------------------------------------------
+      - name: Fail job if vulnerabilities detected
+        if: env.HAS_VULNS == '1'
+        run: exit 1

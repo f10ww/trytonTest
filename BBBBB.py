@@ -1,0 +1,3 @@
+cmd = input() 
+eval(cmd) 
+
