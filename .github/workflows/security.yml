@@ -16,7 +16,7 @@ jobs:
 
     steps:
       # -------------------------------------------------
-      # Check out repository
+      # Checkout code
       # -------------------------------------------------
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -33,14 +33,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Try requirements; ignore if missing
           pip install -r requirements.txt || true
           pip install bandit semgrep
 
       # -------------------------------------------------
-      # Bandit (diff only)
+      # Bandit (diff-only)
       # -------------------------------------------------
-      - name: Run Bandit only on changed Python files
+      - name: Run Bandit on changed Python files
         id: bandit
         shell: bash
         run: |
@@ -56,7 +55,7 @@ jobs:
             fi
           fi
 
-          echo "Using diff range: $RANGE"
+          echo "Using range: $RANGE"
           mapfile -t FILES < <(git diff --name-only "$RANGE" | grep -E '\.py$' || true)
 
           if [ "${#FILES[@]}" -eq 0 ]; then
@@ -65,13 +64,17 @@ jobs:
             exit 0
           fi
 
-          echo "Changed Python files:"
           printf '%s\n' "${FILES[@]}"
-
           bandit -f json -o bandit-report.json "${FILES[@]}" || true
 
+      - name: Upload Bandit Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
       # -------------------------------------------------
-      # Semgrep SAST (auto diff mode)
+      # Semgrep SAST
       # -------------------------------------------------
       - name: Run Semgrep SAST
         uses: returntocorp/semgrep-action@v1
@@ -81,7 +84,7 @@ jobs:
           auditOn: push
 
       # -------------------------------------------------
-      # OWASP Dependency-Check
+      # OWASP Dependency Check
       # -------------------------------------------------
       - name: OWASP Dependency Check
         uses: dependency-check/Dependency-Check_Action@main
@@ -108,8 +111,14 @@ jobs:
           format: "json"
           output: "trivy-report.json"
 
+      - name: Upload Trivy Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.json
+
       # -------------------------------------------------
-      # FIXED: Snyk now works with Tryton
+      # Snyk
       # -------------------------------------------------
       - name: Install Snyk CLI
         uses: snyk/actions/setup@master
@@ -118,7 +127,6 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
-          # Prefer requirements.txt, fallback to setup.py or pyproject.toml
           if [ -f "requirements.txt" ]; then
             TARGET_FILE="requirements.txt"
           elif [ -f "setup.py" ]; then
@@ -126,12 +134,11 @@ jobs:
           elif [ -f "pyproject.toml" ]; then
             TARGET_FILE="pyproject.toml"
           else
-            echo "No dependency file found; creating empty report."
             echo "{}" > snyk-report.json
             exit 0
           fi
 
-          echo "Running Snyk scan using: $TARGET_FILE"
+          echo "Running Snyk using: $TARGET_FILE"
 
           snyk test \
             --file="$TARGET_FILE" \
@@ -139,20 +146,14 @@ jobs:
             --skip-unresolved \
             --json-file-output=snyk-report.json || true
 
-      # -------------------------------------------------
-      # Upload all outputs
-      # -------------------------------------------------
-      - name: Upload Security Reports
+      - name: Upload Snyk Report
         uses: actions/upload-artifact@v4
         with:
-          name: security-reports
-          path: |
-            bandit-report.json
-            trivy-report.json
-            snyk-report.json
+          name: snyk-report
+          path: snyk-report.json
 
       # -------------------------------------------------
-      # Auto-create issue on failure
+      # Auto-create GH Issue when a tool fails
       # -------------------------------------------------
       - name: Create GitHub Issue on Vulnerabilities
         if: failure()
@@ -163,11 +164,11 @@ jobs:
           body: |
             One or more security scanners detected vulnerabilities.
 
-            Reports included:
-            - Bandit (diff only)
+            Reports generated:
+            - Bandit
             - Semgrep
             - Trivy
             - Snyk
             - OWASP Dependency-Check
 
-            Please review the uploaded reports.
+            Download artifacts from the workflow run to review details.
