@@ -20,6 +20,8 @@ jobs:
       # -------------------------------------------------
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # REQUIRED for diff-based scanning
 
       # -------------------------------------------------
       # Python Setup for Tryton
@@ -35,22 +37,56 @@ jobs:
           pip install bandit semgrep
 
       # -------------------------------------------------
-      # 1. Static Code Analysis - Bandit
+      # 1. Static Code Analysis - Bandit (DIFF MODE, FIXED)
       # -------------------------------------------------
-      - name: Run Bandit (Python SAST)
+      - name: Run Bandit only on changed Python files
+        id: bandit
+        shell: bash
         run: |
-          bandit -r . -f json -o bandit-report.json
+          echo "Detecting changed Python files..."
+
+          # Determine correct diff range
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+          else
+            # If before/after are null (e.g. first commit), use HEAD~1
+            if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+              RANGE="HEAD~1"
+            else
+              RANGE="${{ github.event.before }}...${{ github.event.after }}"
+            fi
+          fi
+
+          echo "Using diff range: $RANGE"
+
+          # Gather changed python files
+          mapfile -t FILES < <(git diff --name-only "$RANGE" | grep -E '\.py$' || true)
+
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "No Python files changed."
+            echo "{}" > bandit-report.json
+            exit 0
+          fi
+
+          echo "Changed Python files:"
+          printf '%s\n' "${FILES[@]}"
+
+          # Run Bandit on only changed files
+          bandit -f json -o bandit-report.json "${FILES[@]}" || true
 
       # -------------------------------------------------
-      # 1. Static Code Analysis - Semgrep
+      # 1. Static Code Analysis - Semgrep (AUTO DIFF MODE)
       # -------------------------------------------------
       - name: Run Semgrep SAST
         uses: returntocorp/semgrep-action@v1
         with:
-          config: "p/ci" # production-ready ruleset
+          config: "p/ci"
           publishToken: ${{ secrets.SEMGREP_TOKEN }}
           auditOn: push
 
+      # -------------------------------------------------
+      # 2. Dependency & Open Source Security Scanning
+      # -------------------------------------------------
 
       # OWASP Dependency-Check
       - name: OWASP Dependency Check
@@ -60,6 +96,7 @@ jobs:
           path: "."
           format: "JSON"
           out: "dependency-check-report"
+
       - name: Upload Dependency Check Report
         uses: actions/upload-artifact@v4
         with:
@@ -75,7 +112,7 @@ jobs:
           format: "json"
           output: "trivy-report.json"
 
-      # Snyk SCA Scan
+      # Snyk Dependency Scan
       - name: Snyk Dependency Scan
         uses: snyk/actions/python-3.11@master
         with:
@@ -98,22 +135,20 @@ jobs:
       # -------------------------------------------------
       # 4. Automated Developer Notifications
       # -------------------------------------------------
-
       - name: Create GitHub Issue on Vulnerabilities
-        if: failure()  # Only if scans detect issues
+        if: failure()
         uses: dacbd/create-issue-action@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           title: "⚠️ Security Vulnerability Detected in Pipeline"
           body: |
-            One or more vulnerability scanners have detected issues.
+            One or more security scanners detected vulnerabilities.
 
-            **Reports included**:
-            - Bandit
-            - Semgrep
+            Reports included:
+            - Bandit (diff-only)
+            - Semgrep (diff-only)
             - Trivy
             - Snyk
             - OWASP Dependency-Check
 
-            Please review the generated artifacts.
-
+            Please review the uploaded reports.
