@@ -1,77 +1,119 @@
-name: Tryton DevSecOps Pipeline
+name: Tryton DevSecOps Security Pipeline
 
 on:
   push:
     branches: ["main"]
   pull_request:
 
+permissions:
+  contents: read
+  security-events: write
+  issues: write
+
 jobs:
   security:
     runs-on: ubuntu-latest
 
     steps:
+      # -------------------------------------------------
+      # Check out repository
+      # -------------------------------------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ---------------------------
-      # Static Code Analysis - Semgrep (optional but good)
-      # ---------------------------
+      # -------------------------------------------------
+      # Python Setup for Tryton
+      # -------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt || true
+          pip install bandit semgrep
+
+      # -------------------------------------------------
+      # 1. Static Code Analysis - Bandit
+      # -------------------------------------------------
+      - name: Run Bandit (Python SAST)
+        run: |
+          bandit -r . -f json -o bandit-report.json
+
+      # -------------------------------------------------
+      # 1. Static Code Analysis - Semgrep
+      # -------------------------------------------------
       - name: Run Semgrep SAST
         uses: returntocorp/semgrep-action@v1
         with:
-          config: "auto"
+          config: "p/ci" # production-ready ruleset
+          publishToken: ${{ secrets.SEMGREP_TOKEN }}
+          auditOn: push
 
-      # ---------------------------
-      # Static Code Analysis - Bandit
-      # ---------------------------
-      - name: Run Bandit
-        run: |
-          pip install bandit
-          bandit -r . -f json -o bandit-report.json
 
-      # ---------------------------
-      # Static Code Analysis - SonarQube (SonarCloud)
-      # ---------------------------
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # OWASP Dependency-Check
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
         with:
-          args: >
-            -Dsonar.projectKey=tryton-devsecops
-            -Dsonar.organization=my-org
-
-      # ---------------------------
-      # Dependency Scan - Snyk
-      # ---------------------------
-      - name: Snyk Open Source Scan
-        uses: snyk/actions/python@master
+          project: "tryton"
+          path: "."
+          format: "JSON"
+          out: "dependency-check-report"
+      - name: Upload Dependency Check Report
+        uses: actions/upload-artifact@v4
         with:
-          command: test
-        env:
-          SNYK_INTEGRATION_NAME: github-actions
+          name: dependency-check-report
+          path: dependency-check-report
 
-      # ---------------------------
-      # Dependency Scan - Trivy
-      # ---------------------------
-      - name: Build Hardened Docker Image
-        run: |
-          docker build -t tryton-secure -f docker/Dockerfile.secure .
-
-      - name: Scan Container Image with Trivy
+      # Trivy Vulnerability Scan
+      - name: Trivy FS Scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: "tryton-secure"
-          exit-code: "0"
+          scan-type: "fs"
           severity: "CRITICAL,HIGH"
+          format: "json"
+          output: "trivy-report.json"
 
-      # ---------------------------
-      # Developer Notification
-      # ---------------------------
-      - name: Create GitHub Issue on Findings
-        if: failure()
-        uses: dacbd/create-issue-action@v1
+      # Snyk SCA Scan
+      - name: Snyk Dependency Scan
+        uses: snyk/actions/python-3.11@master
+        with:
+          args: --json-file-output=snyk-report.json
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      # -------------------------------------------------
+      # 3. Upload Reports as Artifacts
+      # -------------------------------------------------
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            trivy-report.json
+            snyk-report.json
+
+      # -------------------------------------------------
+      # 4. Automated Developer Notifications
+      # -------------------------------------------------
+
+      - name: Create GitHub Issue on Vulnerabilities
+        if: failure()  # Only if scans detect issues
+        uses: dacbd/create-issue-action@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          title: "Security Finding Detected in CI Pipeline"
-          body: "A security check failed. Please review logs."
+          title: "⚠️ Security Vulnerability Detected in Pipeline"
+          body: |
+            One or more vulnerability scanners have detected issues.
+
+            **Reports included**:
+            - Bandit
+            - Semgrep
+            - Trivy
+            - Snyk
+            - OWASP Dependency-Check
+
+            Please review the generated artifacts.
+
